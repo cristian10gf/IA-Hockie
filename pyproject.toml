@@ -1,7 +1,7 @@
 [project]
 name = "ia-hockie"
 version = "0.1.0"
-description = "Add your description here"
+description = "A reinforcement learning environment for hockey"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,4 +14,5 @@ dependencies = [
     "stable-baselines3>=2.6.0",
     "tensorboard>=2.19.0",
     "torch>=2.7.0",
+    "tqdm>=4.67.1",
 ]
