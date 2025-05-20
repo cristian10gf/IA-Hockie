@@ -44,7 +44,7 @@ HUMAN_PADDLE_SPEED_FACTOR = 1.0 # How closely human paddle follows mouse (1.0 = 
 AI_PADDLE_SPEED_TRAINING_OPPONENT = 30 # Speed for the rule-based opponent during training
 PUCK_MAX_SPEED = 15
 DIAGONAL_SPEED_FACTOR = 0.7071 # sqrt(2)/2 for diagonal movement (45 degrees)
-PUCK_FRICTION = 0.99  # Velocity multiplier per frame (closer to 1 means less friction)
+PUCK_FRICTION = 0.9999  # Velocity multiplier per frame (closer to 1 means less friction)
 GOAL_WIDTH = BORDER_THICKNESS + 5 # Slightly wider than border
 GOAL_HEIGHT = int(SCREEN_HEIGHT * 0.4)
 GOAL_Y_START = (SCREEN_HEIGHT - GOAL_HEIGHT) // 2
@@ -70,6 +70,7 @@ BATCH_SIZE = 128 # Increased batch size
 MEMORY_SIZE = 50000 # Increased memory size
 TARGET_UPDATE_FREQ = 20 # Update target network every 20 episodes
 MIN_REPLAY_SIZE_TO_TRAIN = 1000 # Start training only after this many samples in memory
+AI_VELOCITY = 4 # AI paddle velocity for training opponent
 
 # Paths
 MODEL_DIR = "trained_models"
@@ -400,10 +401,10 @@ class AirHockeyEnv(gym.Env):
         # --- 1. AI Agent Action ---
         dx, dy = 0, 0
         if action < 4:  # Movimientos cardinales
-            if action == 0: dy = -self.ai_paddle_speed  # Up
-            elif action == 1: dy = self.ai_paddle_speed  # Down
-            elif action == 2: dx = -self.ai_paddle_speed  # Left
-            elif action == 3: dx = self.ai_paddle_speed  # Right
+            if action == 0: dy = -self.ai_paddle_speed*AI_VELOCITY   # Up
+            elif action == 1: dy = self.ai_paddle_speed*AI_VELOCITY  # Down
+            elif action == 2: dx = -self.ai_paddle_speed*AI_VELOCITY  # Left
+            elif action == 3: dx = self.ai_paddle_speed*AI_VELOCITY  # Right
         elif action < 8:  # Movimientos diagonales
             if action == 4:  # Up-Left
                 dx = -self.ai_paddle_speed * DIAGONAL_SPEED_FACTOR
