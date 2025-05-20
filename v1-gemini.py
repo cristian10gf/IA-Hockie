@@ -1,3 +1,4 @@
+import concurrent
 import pygame
 import gymnasium as gym
 from gymnasium import spaces
@@ -16,6 +17,7 @@ from tqdm import tqdm
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
+
 
 # --- Constants ---
 # Screen dimensions
@@ -87,6 +89,8 @@ FONT_SMALL_INFO = pygame.font.Font(None, 24)
 
 # Device configuration for PyTorch
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#DEVICE = torch.device("cpu")
+
 print(f"Using device: {DEVICE}")
 
 # Transition tuple for replay memory
@@ -773,12 +777,14 @@ class DQNAgent:
                 # Retornar la última acción mientras se procesa la nueva
                 future = self.predict_action_async(state)
                 try:
-                    # Intentar obtener el resultado sin bloquear
-                    action = future.result(timeout=0.001)
+                    # Intentar obtener el resultado con un timeout más generoso
+                    action = future.result(timeout=0.05)  # Aumentado de 0.001 a 0.05 segundos (50ms)
                     self.last_action = action
-                except TimeoutError:
-                    action = self.last_action
-                return action
+                    return action
+                except (TimeoutError, concurrent.futures._base.TimeoutError):
+                    # Capturar explícitamente ambos tipos de TimeoutError
+                    # y asegurarse de retornar la última acción
+                    return self.last_action
             else:
                 # Modo síncrono normal para entrenamiento
                 with torch.no_grad():
@@ -787,7 +793,6 @@ class DQNAgent:
                     return q_values.max(1)[1].view(1, 1).item()
         else:
             return random.randrange(self.action_dim)
-
     def store_transition(self, state, action, next_state, reward, done):
         state_tensor = torch.tensor(np.array(state), dtype=torch.float32, device=DEVICE)
         action_tensor = torch.tensor([[action]], dtype=torch.long, device=DEVICE)
