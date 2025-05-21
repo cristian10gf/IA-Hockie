@@ -62,15 +62,15 @@ PADDLE_SMOOTHING = 0.5 # Smoothing factor for paddle movement (0.0 = no smoothin
 STATE_SIZE = 10  # Puck (x,y,vx,vy), AI_paddle (x,y), Opponent_paddle (x,y), score_ai, score_opponent
 ACTION_SIZE = 9  # 0-3: Up,Down,Left,Right, 4-7: Diagonales, 8: Stay Still
 LEARNING_RATE = 0.005 # Adjusted learning rate
-GAMMA = 0.99  # Discount factor
+GAMMA = 0.99         # Factor de descuento para recompensas futuras
 EPSILON_START = 1.0
-EPSILON_END = 0.001
+EPSILON_END = 0.01
 EPSILON_DECAY = 0.999995 # Slower decay: 0.9995, Faster: 0.995
 BATCH_SIZE = 128 # Increased batch size
 MEMORY_SIZE = 50000 # Increased memory size
 TARGET_UPDATE_FREQ = 20 # Update target network every 20 episodes
 MIN_REPLAY_SIZE_TO_TRAIN = 1000 # Start training only after this many samples in memory
-AI_VELOCITY = 4.5 # AI paddle velocity for training opponent
+AI_VELOCITY = 5 # AI paddle velocity for training opponent
 
 # Paths
 MODEL_DIR = "trained_models"
@@ -500,7 +500,7 @@ class AirHockeyEnv(gym.Env):
             else:
                 self.puck_vel[0] *= -1
                 self.puck_pos[0] = BORDER_THICKNESS + GOAL_WIDTH + self.puck_radius
-                reward -= 0.5
+                reward -= 2
 
         # Opponent/Human scores (Puck hits right goal)
         elif self.puck_pos[0] + self.puck_radius >= self.screen_width - BORDER_THICKNESS - GOAL_WIDTH:
@@ -518,7 +518,7 @@ class AirHockeyEnv(gym.Env):
             else:
                 self.puck_vel[0] *= -1
                 self.puck_pos[0] = self.screen_width - BORDER_THICKNESS - GOAL_WIDTH - self.puck_radius
-                reward -= 0.5
+                reward -= 2
 
         # Puck-paddle collisions
         if not goal_scored_this_step: # Only check paddle collisions if no goal was scored
@@ -528,16 +528,33 @@ class AirHockeyEnv(gym.Env):
                 reward += 1.0 # Base reward for hitting puck
                 puck_hit_by_ai_this_step = True
                 
-                # Reward for hitting puck towards opponent goal (puck moving left)
+                # Penalización por golpear hacia la propia portería
+                if self.puck_vel[0] > 0:  # Si el puck se mueve hacia la derecha (portería de la IA)
+                    # Calcular el ángulo del movimiento del puck
+                    angle_to_own_goal = math.atan2(
+                        self.screen_height/2 - self.puck_pos[1],  # Y hacia el centro de la portería
+                        (self.screen_width - BORDER_THICKNESS) - self.puck_pos[0]  # X hacia la portería
+                    )
+                    # Calcular el vector de velocidad normalizado del puck
+                    puck_speed = math.sqrt(self.puck_vel[0]**2 + self.puck_vel[1]**2)
+                    puck_direction = [self.puck_vel[0]/puck_speed, self.puck_vel[1]/puck_speed]
+                    
+                    # Calcular cuán alineado está el puck con la portería
+                    alignment = abs(math.cos(angle_to_own_goal - math.atan2(puck_direction[1], puck_direction[0])))
+                    
+                    # Penalización basada en la alineación y la velocidad
+                    own_goal_penalty = -20.0 * alignment * (puck_speed / self.puck_max_speed)
+                    reward += own_goal_penalty
+                    
+                # Resto de las recompensas por golpear el puck
                 if self.puck_vel[0] < -1.0: # Moving significantly left
                     reward += 10.0 
-                    # Bonus if it's a "shot on goal" (aligned with goal Y)
                     if GOAL_Y_START < self.puck_pos[1] < GOAL_Y_END:
-                        reward += 5.0 
-                
+                        reward += 5.0
+
                 # Penalty for hitting puck towards own goal (puck moving right)
                 # Only penalize if it wasn't a defensive block of a puck already coming towards AI goal
-                if self.puck_vel[0] > 1.0 and self.puck_pos[0] > CENTER_LINE_X + self.screen_width * 0.1:
+                if self.puck_vel[0] > 1.0 and self.puck_pos[0] > CENTER_LINE_X + self.screen_width * 0.6:
                     if puck_vel_before_ai_hit[0] > 0.5: # Puck was already moving towards AI goal
                         reward += 15.0 # Successful block reward
                     else: # AI actively hit it towards its own goal
@@ -547,7 +564,7 @@ class AirHockeyEnv(gym.Env):
                 self.puck_vel = resolve_paddle_puck_collision(self.opponent_paddle_pos, self.opponent_paddle_vel, self.puck_pos, self.puck_vel, self.paddle_radius, self.puck_radius, self.puck_max_speed)
                 # If AI just hit it and opponent immediately returns, maybe small penalty or neutral
                 if puck_hit_by_ai_this_step:
-                    reward -= 0.5 # AI's good hit was immediately countered
+                    reward -= 5 # AI's good hit was immediately countered
 
 
         # --- 4. Additional Rewards/Penalties (if no goal scored yet) ---
@@ -561,45 +578,45 @@ class AirHockeyEnv(gym.Env):
             if dist_to_puck > max_allowed_distance and self.puck_pos[0] < CENTER_LINE_X:
                 # Penalización exponencial por distancia excesiva
                 excess_distance = dist_to_puck - max_allowed_distance
-                distance_penalty = -(0.4 * (excess_distance / 50.0))
+                distance_penalty = -(4 * (excess_distance / 40.0))
                 reward += distance_penalty
 
             # Penalización extra cuando el puck está en el lado de la IA
             if self.puck_pos[0] > CENTER_LINE_X:
                 if dist_to_puck > self.paddle_radius * 2:
                     # Penalización más fuerte cuando el puck está en nuestro lado
-                    defensive_penalty = -(0.2 * (dist_to_puck / 100.0))
+                    defensive_penalty = -(2 * (dist_to_puck / 50.0))
                     reward += defensive_penalty
                 else:
                     # Recompensa por estar cerca del puck en defensa
-                    reward += 0.5
+                    reward += 1
 
             # Resto de las recompensas/penalizaciones
             if self.puck_pos[0] < CENTER_LINE_X and puck_hit_by_ai_this_step:
-                reward += 15.0
+                reward += 10.0
             
             # Penalty for puck in own defensive zone (near goal) - continuous
             if self.puck_pos[0] > self.screen_width * 0.80 and \
                GOAL_Y_START - self.paddle_radius < self.puck_pos[1] < GOAL_Y_END + self.paddle_radius:
-                reward -= 0.2 # Small continuous penalty for puck danger
+                reward -= 2 # Small continuous penalty for puck danger
 
             # Penalty for AI paddle being too far from its goal when puck is on AI's side and moving towards goal
-            if self.puck_pos[0] > CENTER_LINE_X and self.puck_vel[0] > 0.1: # Puck on AI side, moving towards AI goal
+            if self.puck_pos[0] > CENTER_LINE_X and self.puck_vel[0] > 0.001: # Puck on AI side, moving towards AI goal
                 dist_to_center_goal_y = abs(self.ai_paddle_pos[1] - self.screen_height/2)
                 if dist_to_center_goal_y > self.screen_height * 0.25: # If paddle is far from center of Y
-                    reward -= 0.05 * (dist_to_center_goal_y / (self.screen_height * 0.25)) # Scaled penalty
+                    reward -= 3.0 * (dist_to_center_goal_y / (self.screen_height * 0.25)) # Scaled penalty
 
             # Small reward for keeping puck on opponent's side
             if self.puck_pos[0] < CENTER_LINE_X:
-                reward += 4.0
+                reward += 3.0
             
             # Small reward for AI paddle being close to the puck when puck is on AI's side
             if self.puck_pos[0] > CENTER_LINE_X:
                 dist_to_puck = math.sqrt((self.ai_paddle_pos[0]-self.puck_pos[0])**2 + (self.ai_paddle_pos[1]-self.puck_pos[1])**2)
                 if dist_to_puck < self.paddle_radius * 3 : # If close
-                    reward += 0.02
+                    reward += 5
                 else: # If far from puck on its own side
-                    reward -= 0.01
+                    reward -= 5
 
 
         if self.current_step >= self.max_episode_steps and not goal_scored_this_step:
@@ -716,18 +733,35 @@ class AirHockeyEnv(gym.Env):
 class DQN(nn.Module):
     def __init__(self, n_observations, n_actions):
         super(DQN, self).__init__()
-        self.layer1 = nn.Linear(n_observations, 256) # Increased neurons
-        self.layer2 = nn.Linear(256, 256)            # Increased neurons
-        self.layer3 = nn.Linear(256, 256)            # Increased neurons
-        self.layer4 = nn.Linear(256, 256)            # Increased neurons
-        self.layer5 = nn.Linear(256, n_actions)
+        # Capa de entrada más ancha para capturar mejor las características iniciales
+        self.layer1 = nn.Linear(n_observations, 512)
+        #self.bn1 = nn.BatchNorm1d(512)  # Normalización por lotes
+        self.dropout1 = nn.Dropout(0.2)  # Dropout para regularización
+        
+        # Capas intermedias con estructura piramidal
+        self.layer2 = nn.Linear(512, 256)
+        #self.bn2 = nn.BatchNorm1d(256)
+        self.dropout2 = nn.Dropout(0.2)
+        
+        self.layer3 = nn.Linear(256, 128)
+        #self.bn3 = nn.BatchNorm1d(128)
+        self.dropout3 = nn.Dropout(0.2)
+        
+        # Capa de salida
+        self.layer4 = nn.Linear(128, n_actions)
 
     def forward(self, x):
-        x = F.relu(self.layer1(x))
-        x = F.relu(self.layer2(x))
-        x = F.relu(self.layer3(x))
-        x = F.relu(self.layer4(x))
-        return self.layer5(x)
+        # Activación LeakyReLU para mejor gradiente
+        x = F.leaky_relu(self.layer1(x))
+        x = self.dropout1(x)
+
+        x = F.leaky_relu(self.layer2(x))
+        x = self.dropout2(x)
+
+        x = F.leaky_relu(self.layer3(x))
+        x = self.dropout3(x)
+        
+        return self.layer4(x)
 
 class ReplayMemory:
     def __init__(self, capacity):
@@ -763,8 +797,20 @@ class DQNAgent:
         self.target_net.eval()  # Target network is not trained directly
 
         # Añadir el optimizador aquí
-        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=learning_rate, amsgrad=True)
+        self.optimizer = optim.Adam(
+            self.policy_net.parameters(),
+            lr=learning_rate,
+            weight_decay=1e-5,  # L2 regularización
+            amsgrad=True
+        )
         self.memory = ReplayMemory(memory_size)
+        # Añadir scheduler para ajuste dinámico del learning rate
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 
+            mode='max', 
+            factor=0.5, 
+            patience=100,
+        )
         
         self.steps_done = 0 # For epsilon decay based on steps, or can be tied to episodes
         self.prediction_queue = Queue()
@@ -1090,7 +1136,7 @@ def play_game_with_ai(model_filename=None, winning_score=5):
 
         if not game_over_message and not paused:
             # AI's turn to select action - ahora en modo asíncrono
-            ai_action = agent.select_action(state, evaluation_mode=True, async_mode=True)
+            ai_action = agent.select_action(state, evaluation_mode=True)
 
             # El resto del código sigue igual
             next_state, reward, terminated, truncated, info = env.step(ai_action, human_mouse_pos=mouse_pos)
