@@ -60,7 +60,7 @@ DEFENSIVE_POSITION_REWARD = 0.1  # Reward for being in a good defensive position
 BOUNCE_OFF_WALL_PENALTY = -0.2  # Small penalty for puck bouncing off walls
 
 # Paths for saving models
-MODELS_DIR = "models"
+MODELS_DIR = "trained_models"
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
 
@@ -661,7 +661,7 @@ def train_model(num_episodes):
     last_time = start_time
     
     # Log file setup
-    log_dir = "logs"
+    log_dir = "training_logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     log_file = os.path.join(log_dir, f"training_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
