@@ -14,7 +14,6 @@ import os
 import datetime
 import time
 from tqdm import tqdm
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
@@ -82,7 +81,7 @@ if not os.path.exists(LOG_DIR):
 
 # Pygame font
 pygame.font.init()
-FONT_SCORE = pygame.font.Font(None, 74)
+FONT_SCORE = pygame.font.Font(None, 30)
 FONT_MENU = pygame.font.Font(None, 50)
 FONT_INFO = pygame.font.Font(None, 30)
 FONT_SMALL_INFO = pygame.font.Font(None, 24)
@@ -680,26 +679,12 @@ class AirHockeyEnv(gym.Env):
         # Draw puck
         pygame.draw.circle(canvas, COLOR_NEON_PINK, self.puck_pos, self.puck_radius)
 
-        # Modificar la parte del renderizado de puntajes para evitar parpadeo
-        if scores is not None:
-            current_scores = scores
-            if self.last_scores != current_scores or self.score_surface is None:
-                # Solo recrear las superficies de texto si los puntajes cambiaron
-                
-                opp_score_text = FONT_SCORE.render(str(scores[0]), True, COLOR_NEON_BLUE)
-                ai_score_text = FONT_SCORE.render(str(scores[1]), True, COLOR_NEON_YELLOW)
-                
-                # Crear una nueva superficie combinada para los puntajes
-                self.score_surface = pygame.Surface((self.screen_width, 50), pygame.SRCALPHA)
-                self.score_surface.blit(opp_score_text, 
-                    (self.screen_width * 0.25 - opp_score_text.get_width() // 2, 0))
-                self.score_surface.blit(ai_score_text, 
-                    (self.screen_width * 0.75 - ai_score_text.get_width() // 2, 0))
-                self.last_scores = current_scores
+        # Draw Score
+        if self.score_surface is None or self.last_scores != (self.score_ai, self.score_opponent):
+            self.score_surface = FONT_SCORE.render(f"PLAYER: {self.score_opponent}                 AI: {self.score_ai}", True, COLOR_WHITE)
+            self.last_scores = (self.score_ai, self.score_opponent)
 
-            # Usar la superficie pre-renderizada
-            if self.score_surface is not None:
-                canvas.blit(self.score_surface, (0, 20))
+        canvas.blit(self.score_surface, (self.screen_width // 3 - self.score_surface.get_width() // 3, 10))
 
         if self.render_mode == "human":
             self.screen.blit(canvas, (0, 0))
