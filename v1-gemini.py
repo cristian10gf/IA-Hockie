@@ -61,16 +61,16 @@ PADDLE_SMOOTHING = 0.5 # Smoothing factor for paddle movement (0.0 = no smoothin
 # RL Agent parameters
 STATE_SIZE = 10  # Puck (x,y,vx,vy), AI_paddle (x,y), Opponent_paddle (x,y), score_ai, score_opponent
 ACTION_SIZE = 9  # 0-3: Up,Down,Left,Right, 4-7: Diagonales, 8: Stay Still
-LEARNING_RATE = 0.0005 # Adjusted learning rate
+LEARNING_RATE = 0.005 # Adjusted learning rate
 GAMMA = 0.99  # Discount factor
 EPSILON_START = 1.0
-EPSILON_END = 0.01
-EPSILON_DECAY = 0.99995 # Slower decay: 0.9995, Faster: 0.995
+EPSILON_END = 0.001
+EPSILON_DECAY = 0.999995 # Slower decay: 0.9995, Faster: 0.995
 BATCH_SIZE = 128 # Increased batch size
 MEMORY_SIZE = 50000 # Increased memory size
 TARGET_UPDATE_FREQ = 20 # Update target network every 20 episodes
 MIN_REPLAY_SIZE_TO_TRAIN = 1000 # Start training only after this many samples in memory
-AI_VELOCITY = 4 # AI paddle velocity for training opponent
+AI_VELOCITY = 4.5 # AI paddle velocity for training opponent
 
 # Paths
 MODEL_DIR = "trained_models"
@@ -90,7 +90,6 @@ FONT_SMALL_INFO = pygame.font.Font(None, 24)
 
 # Device configuration for PyTorch
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#DEVICE = torch.device("cpu")
 
 print(f"Using device: {DEVICE}")
 
@@ -121,9 +120,24 @@ def normalize_state(state_array, screen_width, screen_height, max_speed):
     return norm_state
 
 def check_collision(obj1_pos, obj1_radius, obj2_pos, obj2_radius):
-    """Checks collision between two circular objects."""
-    dist_sq = (obj1_pos[0] - obj2_pos[0])**2 + (obj1_pos[1] - obj2_pos[1])**2
-    return dist_sq <= (obj1_radius + obj2_radius)**2
+    """
+    Checks collision between two circular objects using precise distance calculation.
+    Args:
+        obj1_pos: [x,y] position of first object
+        obj1_radius: radius of first object
+        obj2_pos: [x,y] position of second object
+        obj2_radius: radius of second object
+    Returns:
+        bool: True if objects are colliding, False otherwise
+    """
+    # Calculate exact distance between centers using sqrt
+    dx = obj1_pos[0] - obj2_pos[0]
+    dy = obj1_pos[1] - obj2_pos[1]
+    actual_distance = math.sqrt(dx*dx + dy*dy)
+
+    # Compare with sum of radii for precise collision detection
+    # Add small epsilon to handle floating point imprecision
+    return actual_distance <= (obj1_radius + obj2_radius + 1e-10)
 
 def resolve_paddle_puck_collision(paddle_pos, paddle_vel, puck_pos, puck_vel, paddle_radius, puck_radius, puck_max_speed):
     """Resolves collision between a paddle and the puck. Modifies puck_pos and returns new puck_vel."""
@@ -474,37 +488,37 @@ class AirHockeyEnv(gym.Env):
         if self.puck_pos[0] - self.puck_radius <= BORDER_THICKNESS + GOAL_WIDTH:
             if GOAL_Y_START < self.puck_pos[1] < GOAL_Y_END:
                 if self.human_opponent:  
-                    reward = 100.0  # La IA anota en modo juego
+                    reward = 50.0  # La IA anota en modo juego
                     self.score_ai += 1  # Punto para la IA
                 else:  
-                    reward = 100.0  # La IA anota en modo entrenamiento
+                    reward = 50.0  # La IA anota en modo entrenamiento
                     self.score_ai += 1
                 terminated = True
                 goal_scored_this_step = True
                 self._reset_puck_to_center()  # Reset puck después del gol
-                pygame.time.wait(500)  # Pequeña pausa para mostrar el gol
+                pygame.time.wait(300)  # Pequeña pausa para mostrar el gol
             else:
                 self.puck_vel[0] *= -1
                 self.puck_pos[0] = BORDER_THICKNESS + GOAL_WIDTH + self.puck_radius
-                reward -= 0.1
+                reward -= 0.5
 
         # Opponent/Human scores (Puck hits right goal)
         elif self.puck_pos[0] + self.puck_radius >= self.screen_width - BORDER_THICKNESS - GOAL_WIDTH:
             if GOAL_Y_START < self.puck_pos[1] < GOAL_Y_END:
                 if self.human_opponent:
-                    reward = -100.0  # La IA pierde (modo juego)
+                    reward = -50.0  # La IA pierde (modo juego)
                     self.score_opponent += 1  # Punto para el humano
                 else:
-                    reward = -100.0  # La IA pierde (modo entrenamiento)
+                    reward = -50.0  # La IA pierde (modo entrenamiento)
                     self.score_opponent += 1
                 terminated = True
                 goal_scored_this_step = True
                 self._reset_puck_to_center()  # Reset puck después del gol
-                pygame.time.wait(500)  # Pequeña pausa para mostrar el gol
+                pygame.time.wait(300)  # Pequeña pausa para mostrar el gol
             else:
                 self.puck_vel[0] *= -1
                 self.puck_pos[0] = self.screen_width - BORDER_THICKNESS - GOAL_WIDTH - self.puck_radius
-                reward -= 0.1
+                reward -= 0.5
 
         # Puck-paddle collisions
         if not goal_scored_this_step: # Only check paddle collisions if no goal was scored
@@ -543,26 +557,26 @@ class AirHockeyEnv(gym.Env):
                                    (self.ai_paddle_pos[1]-self.puck_pos[1])**2)
             
             # Penalización base por distancia
-            max_allowed_distance = self.screen_width * 0.4  # Distancia máxima permitida
-            if dist_to_puck > max_allowed_distance:
+            max_allowed_distance = self.screen_width * 0.8  # Distancia máxima permitida
+            if dist_to_puck > max_allowed_distance and self.puck_pos[0] < CENTER_LINE_X:
                 # Penalización exponencial por distancia excesiva
                 excess_distance = dist_to_puck - max_allowed_distance
-                distance_penalty = -(0.1 * (excess_distance / 50.0) ** 2)
+                distance_penalty = -(0.4 * (excess_distance / 50.0))
                 reward += distance_penalty
 
             # Penalización extra cuando el puck está en el lado de la IA
             if self.puck_pos[0] > CENTER_LINE_X:
-                if dist_to_puck > self.paddle_radius * 3:
+                if dist_to_puck > self.paddle_radius * 2:
                     # Penalización más fuerte cuando el puck está en nuestro lado
-                    defensive_penalty = -(0.2 * (dist_to_puck / 100.0) ** 2)
+                    defensive_penalty = -(0.2 * (dist_to_puck / 100.0))
                     reward += defensive_penalty
                 else:
                     # Recompensa por estar cerca del puck en defensa
-                    reward += 0.05
+                    reward += 0.5
 
             # Resto de las recompensas/penalizaciones
             if self.puck_pos[0] < CENTER_LINE_X and puck_hit_by_ai_this_step:
-                reward += 5.0
+                reward += 15.0
             
             # Penalty for puck in own defensive zone (near goal) - continuous
             if self.puck_pos[0] > self.screen_width * 0.80 and \
@@ -577,7 +591,7 @@ class AirHockeyEnv(gym.Env):
 
             # Small reward for keeping puck on opponent's side
             if self.puck_pos[0] < CENTER_LINE_X:
-                reward += 0.01
+                reward += 4.0
             
             # Small reward for AI paddle being close to the puck when puck is on AI's side
             if self.puck_pos[0] > CENTER_LINE_X:
@@ -590,7 +604,7 @@ class AirHockeyEnv(gym.Env):
 
         if self.current_step >= self.max_episode_steps and not goal_scored_this_step:
             terminated = True # End episode if too long
-            reward -= 20.0 # Penalty for not finishing (increased)
+            reward -= 10.0 # Penalty for not finishing (increased)
             # print(f"Episode timed out. Steps: {self.current_step}")
 
 
@@ -634,7 +648,7 @@ class AirHockeyEnv(gym.Env):
 
         # Draw goals (actual scoring area)
         pygame.draw.rect(canvas, COLOR_NEON_GREEN, (BORDER_THICKNESS, GOAL_Y_START, GOAL_WIDTH, GOAL_HEIGHT)) # Left goal
-        pygame.draw.rect(canvas, COLOR_NEON_GREEN, (self.screen_width - BORDER_THICKNESS - GOAL_WIDTH, GOAL_Y_START, GOAL_WIDTH, GOAL_HEIGHT)) # Right goal
+        pygame.draw.rect(canvas, COLOR_NEON_GREEN, (self.screen_width - BORDER_THICKNESS - GOAL_WIDTH, GOAL_Y_START, GOAL_WIDTH, GOAL_HEIGHT)) # Right goal    
         
         # Draw center line and circle
         pygame.draw.line(canvas, COLOR_WHITE, (CENTER_LINE_X, BORDER_THICKNESS), (CENTER_LINE_X, self.screen_height - BORDER_THICKNESS), 2)
@@ -654,6 +668,7 @@ class AirHockeyEnv(gym.Env):
             current_scores = scores
             if self.last_scores != current_scores or self.score_surface is None:
                 # Solo recrear las superficies de texto si los puntajes cambiaron
+                
                 opp_score_text = FONT_SCORE.render(str(scores[0]), True, COLOR_NEON_BLUE)
                 ai_score_text = FONT_SCORE.render(str(scores[1]), True, COLOR_NEON_YELLOW)
                 
@@ -794,6 +809,7 @@ class DQNAgent:
                     return q_values.max(1)[1].view(1, 1).item()
         else:
             return random.randrange(self.action_dim)
+        
     def store_transition(self, state, action, next_state, reward, done):
         state_tensor = torch.tensor(np.array(state), dtype=torch.float32, device=DEVICE)
         action_tensor = torch.tensor([[action]], dtype=torch.long, device=DEVICE)
@@ -975,20 +991,6 @@ def train_agent(num_episodes=1000, training_opponent_level=2, model_save_name_pr
             )
             with open(log_filename, "a") as f:
                 f.write(log_message + "\n")
-
-        # Dynamically adjust training opponent level (simple example)
-        # If AI is winning consistently, make opponent harder
-        if i_episode > 100 and i_episode % 50 == 0:
-            if len(ai_scores_log) > 50 and len(opponent_scores_log) > 50:
-                recent_ai_wins = sum(s_ai > s_opp for s_ai, s_opp in zip(ai_scores_log[-50:], opponent_scores_log[-50:]))
-                if recent_ai_wins > 35 and env.training_opponent_level == 1: # Winning more than 70% of recent episodes
-                    env.training_opponent_level = 2
-                    print(f"Increasing training opponent difficulty to level 2 at episode {i_episode}")
-                    with open(log_filename, "a") as f:
-                        f.write(f"Increased training opponent difficulty to level 2 at episode {i_episode}\n")
-                elif recent_ai_wins < 15 and env.training_opponent_level == 2: # Losing more than 70%
-                    # env.training_opponent_level = 1 # Could also reduce, but let's keep it at least level 1 or make it harder
-                    pass 
 
     # Save the final model with a timestamp
     final_model_name = f"{model_save_name_prefix}_{timestamp}.pth"
