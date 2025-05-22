@@ -42,7 +42,8 @@ PADDLE_SPEED = 7  # For AI discrete moves
 HUMAN_PADDLE_SPEED_FACTOR = 1.0 # How closely human paddle follows mouse (1.0 = instant)
 AI_PADDLE_SPEED_TRAINING_OPPONENT = 30 # Speed for the rule-based opponent during training
 PUCK_MAX_SPEED = 15
-DIAGONAL_SPEED_FACTOR = 0.7071 # sqrt(2)/2 for diagonal movement (45 degrees)
+AI_VELOCITY = 5 # AI paddle velocity for training opponent
+DIAGONAL_SPEED_FACTOR = 0.7071 * AI_VELOCITY # sqrt(2)/2 for diagonal movement (45 degrees)
 PUCK_FRICTION = 0.9999  # Velocity multiplier per frame (closer to 1 means less friction)
 GOAL_WIDTH = BORDER_THICKNESS + 5 # Slightly wider than border
 GOAL_HEIGHT = int(SCREEN_HEIGHT * 0.4)
@@ -69,7 +70,6 @@ BATCH_SIZE = 128 # Increased batch size
 MEMORY_SIZE = 50000 # Increased memory size
 TARGET_UPDATE_FREQ = 20 # Update target network every 20 episodes
 MIN_REPLAY_SIZE_TO_TRAIN = 1000 # Start training only after this many samples in memory
-AI_VELOCITY = 5 # AI paddle velocity for training opponent
 
 # Paths
 MODEL_DIR = "trained_models"
@@ -524,10 +524,19 @@ class AirHockeyEnv(gym.Env):
             puck_vel_before_ai_hit = list(self.puck_vel) # Store puck velocity before potential AI hit
             if check_collision(self.ai_paddle_pos, self.paddle_radius, self.puck_pos, self.puck_radius):
                 self.puck_vel = resolve_paddle_puck_collision(self.ai_paddle_pos, self.ai_paddle_vel, self.puck_pos, self.puck_vel, self.paddle_radius, self.puck_radius, self.puck_max_speed)
-                reward += 1.0 # Base reward for hitting puck
+                reward += 10.0 # Base reward for hitting puck
                 puck_hit_by_ai_this_step = True
                 
-                # Penalización por golpear hacia la propia portería
+                # Recompensa por despeje defensivo efectivo
+                was_moving_to_own_goal = puck_vel_before_ai_hit[0] > 0.5  # Umbral pequeño para considerar movimiento hacia la portería
+                is_now_moving_to_opponent = self.puck_vel[0] < -1.0  # Umbral para considerar despeje efectivo
+                if was_moving_to_own_goal and is_now_moving_to_opponent:
+                    # Factor de peligrosidad (más cerca del gol = más recompensa por despejar)
+                    danger_distance = self.screen_width - self.puck_pos[0]
+                    danger_factor = min(1.0, danger_distance / (self.screen_width * 0.3))
+                    reward += 7.0 * danger_factor  # Recompensa por despeje efectivo
+                
+                # Penalización por golpear hacia la propia portería (ajustado para ser menos prohibitivo)
                 if self.puck_vel[0] > 0:  # Si el puck se mueve hacia la derecha (portería de la IA)
                     # Calcular el ángulo del movimiento del puck
                     angle_to_own_goal = math.atan2(
@@ -541,29 +550,66 @@ class AirHockeyEnv(gym.Env):
                     # Calcular cuán alineado está el puck con la portería
                     alignment = abs(math.cos(angle_to_own_goal - math.atan2(puck_direction[1], puck_direction[0])))
                     
-                    # Penalización basada en la alineación y la velocidad
-                    own_goal_penalty = -20.0 * alignment * (puck_speed / self.puck_max_speed)
-                    reward += own_goal_penalty
+                    # Calcular factor de distancia (1.0 cuando está cerca, 0.0 cuando está lejos)
+                    distance_to_goal = math.sqrt(
+                        (self.screen_width - BORDER_THICKNESS - self.puck_pos[0])**2 +
+                        (self.screen_height/2 - self.puck_pos[1])**2
+                    )
+                    distance_factor = max(0.0, 1.0 - (distance_to_goal / (self.screen_width * 0.7)))
                     
-                # Resto de las recompensas por golpear el puck
-                if self.puck_vel[0] < -1.0: # Moving significantly left
-                    reward += 10.0 
+                    # Solo penalizar golpes significativos hacia la portería propia (velocidad mínima)
+                    if puck_speed > 0:
+                        # Penalización reducida y escalada por velocidad y alineación
+                        own_goal_penalty = -3.5 * alignment * (puck_speed / self.puck_max_speed) * distance_factor
+                        reward += own_goal_penalty
+                    
+                # Ponderar recompensa por golpear el puck según alineación con portería enemiga
+                if self.puck_vel[0] < 0: # Si se mueve hacia la portería enemiga (izquierda)
+                    reward += 10.0  # Recompensa base por golpear el puck hacia la portería enemiga
+                    # Calcular ángulo entre el movimiento del puck y la línea hacia el centro de la portería
+                    target_y = (GOAL_Y_START + GOAL_Y_END) / 2  # Centro de la portería enemiga
+                    target_x = BORDER_THICKNESS  # X de la portería enemiga
+                    
+                    # Vector hacia el objetivo (portería)
+                    dx_to_goal = target_x - self.puck_pos[0]
+                    dy_to_goal = target_y - self.puck_pos[1]
+                    
+                    # Ángulos
+                    angle_to_goal = math.atan2(dy_to_goal, dx_to_goal)
+                    puck_angle = math.atan2(self.puck_vel[1], self.puck_vel[0])
+                    
+                    # Calcular diferencia de ángulos (0 = perfectamente alineado)
+                    angle_diff = abs(angle_to_goal - puck_angle)
+                    angle_factor = 1.0 - (angle_diff / math.pi)  # 1.0 = alineado, 0 = opuesto
+                    
+                    # Factor de distancia (más recompensa cuando está más cerca de la portería)
+                    distance_to_goal = math.sqrt(dx_to_goal**2 + dy_to_goal**2)
+                    distance_factor = 1.0 - min(1.0, distance_to_goal / SCREEN_WIDTH)
+                    
+                    # Recompensa combinada por alineación y distancia
+                    reward += 15.0 * angle_factor * (1.0 + distance_factor)
+                    
+                    # Recompensa adicional si está en línea con la portería
                     if GOAL_Y_START < self.puck_pos[1] < GOAL_Y_END:
-                        reward += 5.0
+                        reward += 5.0 * angle_factor * (1.0 + distance_factor)
 
-                # Penalty for hitting puck towards own goal (puck moving right)
-                # Only penalize if it wasn't a defensive block of a puck already coming towards AI goal
-                if self.puck_vel[0] > 1.0 and self.puck_pos[0] > CENTER_LINE_X + self.screen_width * 0.6:
-                    if puck_vel_before_ai_hit[0] > 0.5: # Puck was already moving towards AI goal
-                        reward += 15.0 # Successful block reward
-                    else: # AI actively hit it towards its own goal
-                        reward -= 10.0 # Stronger penalty for this mistake
+                if puck_vel_before_ai_hit[0] < 0 and self.puck_vel[0] > 0:
+                    # Penalización escalada por distancia vertical al centro de la portería
+                    goal_y_center = (GOAL_Y_START + GOAL_Y_END) / 2
+                    y_distance_factor = 1 - min(1.0, abs(self.puck_pos[1] - goal_y_center) / (SCREEN_HEIGHT / 2))
+                    reward -= 5.0 * (y_distance_factor + 0.2)  # Base mínima de 0.2
+
+                if puck_vel_before_ai_hit[0] > 0 and self.puck_vel[0] < 0:
+                    # Recompensa escalada por distancia vertical al centro de la portería
+                    goal_y_center = (GOAL_Y_START + GOAL_Y_END) / 2
+                    y_distance_factor = 1 - min(1.0, abs(self.puck_pos[1] - goal_y_center) / (SCREEN_HEIGHT / 2))
+                    reward += 10.0 * (y_distance_factor + 0.2)  # Base mínima de 0.2
 
             if check_collision(self.opponent_paddle_pos, self.paddle_radius, self.puck_pos, self.puck_radius):
                 self.puck_vel = resolve_paddle_puck_collision(self.opponent_paddle_pos, self.opponent_paddle_vel, self.puck_pos, self.puck_vel, self.paddle_radius, self.puck_radius, self.puck_max_speed)
                 # If AI just hit it and opponent immediately returns, maybe small penalty or neutral
                 if puck_hit_by_ai_this_step:
-                    reward -= 5 # AI's good hit was immediately countered
+                    reward -= 10 # AI's good hit was immediately countered
 
 
         # --- 4. Additional Rewards/Penalties (if no goal scored yet) ---
@@ -571,52 +617,77 @@ class AirHockeyEnv(gym.Env):
             # Penalización progresiva por distancia al puck
             dist_to_puck = math.sqrt((self.ai_paddle_pos[0]-self.puck_pos[0])**2 + 
                                    (self.ai_paddle_pos[1]-self.puck_pos[1])**2)
-            
-            # Penalización base por distancia
-            max_allowed_distance = self.screen_width * 0.8  # Distancia máxima permitida
-            if dist_to_puck > max_allowed_distance and self.puck_pos[0] < CENTER_LINE_X:
-                # Penalización exponencial por distancia excesiva
-                excess_distance = dist_to_puck - max_allowed_distance
-                distance_penalty = -(4 * (excess_distance / 40.0))
-                reward += distance_penalty
 
             # Penalización extra cuando el puck está en el lado de la IA
             if self.puck_pos[0] > CENTER_LINE_X:
-                if dist_to_puck > self.paddle_radius * 2:
-                    # Penalización más fuerte cuando el puck está en nuestro lado
-                    defensive_penalty = -(2 * (dist_to_puck / 50.0))
-                    reward += defensive_penalty
-                else:
-                    # Recompensa por estar cerca del puck en defensa
-                    reward += 1
+                is_puck_moving_towards_own_goal = self.puck_vel[0] > 0.3  # Umbral bajo pero positivo para movimiento hacia portería
+                puck_speed = math.sqrt(self.puck_vel[0]**2 + self.puck_vel[1]**2)
+                is_puck_slow = puck_speed < 2.5  # Umbral ligeramente aumentado
 
-            # Resto de las recompensas/penalizaciones
-            if self.puck_pos[0] < CENTER_LINE_X and puck_hit_by_ai_this_step:
-                reward += 10.0
-            
-            # Penalty for puck in own defensive zone (near goal) - continuous
-            if self.puck_pos[0] > self.screen_width * 0.80 and \
-               GOAL_Y_START - self.paddle_radius < self.puck_pos[1] < GOAL_Y_END + self.paddle_radius:
-                reward -= 2 # Small continuous penalty for puck danger
+                # Factor de reducción basado en la proximidad a la portería
+                if dist_to_puck > self.paddle_radius * 1.8:  # Umbral aumentado
+                    defensive_penalty = -(3.0 * (dist_to_puck / (self.screen_width * 0.25)))  # Penalización aumentada
+                    reward += defensive_penalty
+                elif not is_puck_moving_towards_own_goal:  # Solo recompensar proximidad si no es peligroso
+                    reward += 5.0  # Reducida de 5.0 a 2.0
+                
+                # Penalización por pasividad si el puck se mueve hacia la portería y la IA está cerca pero no actúa
+                if is_puck_moving_towards_own_goal and dist_to_puck < self.paddle_radius * 2.0:
+                    # Penalización escalonada según velocidad del puck
+                    if is_puck_slow:
+                        reward -= 8.0  # Aumentada de 5.0 a 8.0 para puck lento (más fácil de golpear)
+                    else:
+                        reward -= 4.0  # Penalización moderada para pucks rápidos (más difíciles de golpear)
 
             # Penalty for AI paddle being too far from its goal when puck is on AI's side and moving towards goal
-            if self.puck_pos[0] > CENTER_LINE_X and self.puck_vel[0] > 0.001: # Puck on AI side, moving towards AI goal
-                dist_to_center_goal_y = abs(self.ai_paddle_pos[1] - self.screen_height/2)
-                if dist_to_center_goal_y > self.screen_height * 0.25: # If paddle is far from center of Y
-                    reward -= 3.0 * (dist_to_center_goal_y / (self.screen_height * 0.25)) # Scaled penalty
+            if self.puck_pos[0] > CENTER_LINE_X:  # Puck on AI side
+                # Calculate distance to ideal defensive position (ahora depende de la posición Y del puck)
+                ideal_x = self.screen_width - (self.screen_width * 0.4)  # 60% of screen width
+                
+                # La posición Y ideal ahora se calcula en base a la posición del puck
+                puck_goal_y_diff = self.puck_pos[1] - (self.screen_height / 2)
+                # Seguir el puck pero no demasiado, mantener protegida la portería
+                ideal_y = (self.screen_height / 2) + (puck_goal_y_diff * 0.7)
+                # Limitar el rango para que no se vaya demasiado arriba o abajo
+                ideal_y = max(GOAL_Y_START + self.paddle_radius, 
+                             min(GOAL_Y_END - self.paddle_radius, ideal_y))
+                
+                dist_x = abs(self.ai_paddle_pos[0] - ideal_x)
+                dist_y = abs(self.ai_paddle_pos[1] - ideal_y)
+                
+                # Normalize distances relative to screen dimensions
+                norm_dist_x = dist_x / (self.screen_width * 0.25)  
+                norm_dist_y = dist_y / (self.screen_height * 0.25)  
+                
+                # Combined distance penalty (mayor peso a la posición X defensiva)
+                total_dist = math.sqrt((norm_dist_x * 1.3)**2 + norm_dist_y**2)
+                if total_dist > 1.0:  
+                    reward -= 4.5 * total_dist  # Increased penalty
+                else:
+                    reward += 3 * (1.0 - total_dist)  # Increased small reward
+
+                # Penalización aumentada por puck en zona de peligro
+                goal_y_center = (GOAL_Y_START + GOAL_Y_END) / 2
+                is_puck_aligned_with_goal = (GOAL_Y_START - self.paddle_radius < self.puck_pos[1] < GOAL_Y_END + self.paddle_radius)
+                
+                if is_puck_aligned_with_goal and self.puck_vel[0] > 0:
+                    # Calcular la distancia a la línea de gol
+                    distance_to_goal_line = self.screen_width - BORDER_THICKNESS - self.puck_pos[0]
+                    # Normalizar distancia (1 cuando está muy cerca, 0 cuando está lejos)
+                    normalized_distance = 1.0 - min(1.0, distance_to_goal_line / (self.screen_width * 0.4))
+                    
+                    # Penalización base aumentada y escala exponencial con la velocidad hacia la portería
+                    danger_penalty = -3.5  # Base aumentada de -2.5 a -3.5
+                    velocity_factor = (self.puck_vel[0] / self.puck_max_speed) ** 2  # Factor cuadrático para velocidades altas
+                    distance_urgency = normalized_distance ** 1.5  # Urgencia aumenta exponencialmente con proximidad
+                    
+                    reward += danger_penalty * (1 + 2.0 * velocity_factor) * (1 + 2.0 * distance_urgency)
 
             # Small reward for keeping puck on opponent's side
             if self.puck_pos[0] < CENTER_LINE_X:
-                reward += 3.0
-            
-            # Small reward for AI paddle being close to the puck when puck is on AI's side
-            if self.puck_pos[0] > CENTER_LINE_X:
-                dist_to_puck = math.sqrt((self.ai_paddle_pos[0]-self.puck_pos[0])**2 + (self.ai_paddle_pos[1]-self.puck_pos[1])**2)
-                if dist_to_puck < self.paddle_radius * 3 : # If close
-                    reward += 5
-                else: # If far from puck on its own side
-                    reward -= 5
-
+                reward += 2.0
+                if puck_hit_by_ai_this_step:
+                    reward += 7.0
 
         if self.current_step >= self.max_episode_steps and not goal_scored_this_step:
             terminated = True # End episode if too long
@@ -681,7 +752,7 @@ class AirHockeyEnv(gym.Env):
 
         # Draw Score
         if self.score_surface is None or self.last_scores != (self.score_ai, self.score_opponent):
-            self.score_surface = FONT_SCORE.render(f"PLAYER: {self.score_opponent}                 AI: {self.score_ai}", True, COLOR_WHITE)
+            self.score_surface = FONT_SCORE.render(f"PLAYER: {self.score_opponent}  |  AI: {self.score_ai}", True, COLOR_WHITE)
             self.last_scores = (self.score_ai, self.score_opponent)
 
         canvas.blit(self.score_surface, (self.screen_width // 3 - self.score_surface.get_width() // 3, 10))
