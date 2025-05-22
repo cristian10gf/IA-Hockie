@@ -638,6 +638,10 @@ class AirHockeyEnv(gym.Env):
                         reward -= 8.0  # Aumentada de 5.0 a 8.0 para puck lento (más fácil de golpear)
                     else:
                         reward -= 4.0  # Penalización moderada para pucks rápidos (más difíciles de golpear)
+                else:
+                    # Recompensa por estar cerca del puck
+                    if dist_to_puck < self.paddle_radius * 1.5:
+                        reward += 3.0
 
             # Penalty for AI paddle being too far from its goal when puck is on AI's side and moving towards goal
             if self.puck_pos[0] > CENTER_LINE_X:  # Puck on AI side
@@ -665,6 +669,15 @@ class AirHockeyEnv(gym.Env):
                     reward -= 4.5 * total_dist  # Increased penalty
                 else:
                     reward += 3 * (1.0 - total_dist)  # Increased small reward
+
+                # beneficial reward for being in the right position
+                if dist_x < self.paddle_radius * 1.5 and dist_y < self.paddle_radius * 1.5:
+                    reward += 10.0
+
+                # beneficial reward for being in around the puck
+                if dist_to_puck < self.paddle_radius * 1.5:
+                    reward += 4.0
+                
 
                 # Penalización aumentada por puck en zona de peligro
                 goal_y_center = (GOAL_Y_START + GOAL_Y_END) / 2
